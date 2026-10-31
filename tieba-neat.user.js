@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贴吧清爽宽屏 Tieba Neat
 // @namespace    tieba-neat
-// @version      0.2.1
+// @version      0.2.8
 // @description  新版百度贴吧：宽屏适配，屏蔽“最有料”“相关推荐”等栏目与广告，支持点选屏蔽任意元素
 // @match        *://tieba.baidu.com/*
 // @run-at       document-start
@@ -19,23 +19,23 @@
 
   // 按类名屏蔽的已知模块（类名来自新版贴吧页面实测）
   const BLOCKS = [
-    { id: 'hotTopic', name: '首页右栏「最有料热点」', sel: '.hot-topic-wrapper', on: true },
-    { id: 'hotForum', name: '首页右栏「最有料吧」', sel: '.hot-forum-wrapper', on: true },
+    { id: 'rightSidebar', name: '右侧栏（首页 / 吧页 / 个人页 / 帖子页）', on: true,
+      sel: '.home-page-wrapper .right-nav-bar, .frs-right-sidebar, .usercenter-content-wrapper > .right-nav-bar, .pb-page-wrapper .right-nav-bar' },
     { id: 'ads', name: '广告 / 下载 App 引导', on: true,
       sel: '.ad-banner-wrapper, .feed-ad-container, .feed-ad-placeholder, [data-key^="ad__"], .tb-ad-wrap, .native-ad-wrap, .brise-pb-ad, .dasense-ad, .ad-container, .app-download-box, .tb-bottom-banner' },
     { id: 'topExtras', name: '顶部推广图标（保留消息）', on: true,
-      sel: '.top-nav-bar .menu-list:has(use[*|href*="message" i]) > :not(:has(use[*|href*="message" i]))' },
-    { id: 'postSidebar', name: '帖子页右侧推荐栏', sel: '.pb-page-wrapper .right-nav-bar', on: true },
+      sel: '.top-nav-bar :is(.menu-item, [class*="menu-item"]):not(:has(use[*|href*="message" i], use[*|href*="feedback" i], use[*|href*="back_old" i])), .top-nav-bar .menu-list:has(use[*|href*="message" i]) > :not(:has(use[*|href*="message" i]))' },
     { id: 'profileTools', name: '个人主页「常用功能」推广', sel: '.usercenter-page-wrapper .usual-function-wrapper', on: true },
-    { id: 'profileSidebar', name: '个人主页右栏（简介 / 徽章）', sel: '.usercenter-content-wrapper > .right-nav-bar', on: false },
-    { id: 'frsSidebar', name: '吧页右栏（吧信息 / 吧务 / 吧规）', sel: '.frs-right-sidebar', on: false },
     { id: 'leftNav', name: '左侧导航栏', sel: '.pc-main-page-layout .left-content, .pc-main-page-layout .collapse-btn', on: false },
   ];
 
+  const CONFIG_VERSION = 7;
+
   const DEFAULTS = {
+    version: CONFIG_VERSION,
     wide: true,
     pageWidth: '2560px', // 整体版心（原版 1920px）
-    colWidth: '1200px', // 信息流 / 帖子正文列（原版首页 708px）
+    colWidth: '1320px', // 信息流 / 帖子正文列（原版首页 708px）
     mediaWidth: '820px', // 信息流卡片里的图片 / 视频
     blocks: Object.fromEntries(BLOCKS.map((b) => [b.id, b.on])),
     // 标题文字等于这些词的栏目会被整块隐藏
@@ -45,7 +45,16 @@
 
   function loadCfg() {
     const saved = GM_getValue('cfg', {});
-    return { ...DEFAULTS, ...saved, blocks: { ...DEFAULTS.blocks, ...(saved.blocks || {}) } };
+    const out = { ...DEFAULTS, ...saved, blocks: { ...DEFAULTS.blocks, ...(saved.blocks || {}) } };
+    // 旧版本有多个分散的侧栏开关；升级后合并成一个，并默认收起。
+    if (saved.version !== CONFIG_VERSION) {
+      for (const k of ['homeSidebar', 'hotTopic', 'hotForum', 'frsSidebar', 'profileSidebar', 'postSidebar']) delete out.blocks[k];
+      out.blocks.rightSidebar = true;
+      if (!saved.colWidth || saved.colWidth === '1200px') out.colWidth = DEFAULTS.colWidth;
+      out.version = CONFIG_VERSION;
+      GM_setValue('cfg', out);
+    }
+    return out;
   }
   let cfg = loadCfg();
   const saveCfg = () => GM_setValue('cfg', cfg);
@@ -65,15 +74,20 @@
   const BASE_CSS = `
 html:not(.tn-reveal) [data-tn-hide] { display: none !important; }
 html.tn-reveal [data-tn-hide] { outline: 2px dashed #f56c6c !important; opacity: .45 !important; }
+.top-nav-bar .home-icon { display: none !important; }
+.top-nav-bar .home-icon-min { display: block !important; width: 34px !important; height: 34px !important; }
+.top-nav-bar .tb-home { width: 34px !important; }
+.top-nav-bar .search-mid { max-width: min(800px, 55vw) !important; }
+html.tn-top-center .top-nav-bar .search-mid { transform: translateX(var(--tn-search-shift, 0px)); }
+.frs-page-wrap .floating-buttons { left: 2px !important; width: calc(var(--tn-gutter) - 4px) !important; }
+.frs-page-wrap .floating-buttons .back-btn { width: 100% !important; height: calc(var(--tn-gutter) - 4px) !important; }
+.frs-page-wrap .floating-buttons .back-icon { width: 70% !important; height: 70% !important; }
 `;
 
   function buildCss() {
     const out = [BASE_CSS];
     const b = cfg.blocks;
     const hideSels = BLOCKS.filter((x) => b[x.id]).map((x) => x.sel);
-    // 两个「最有料」都关掉后首页右栏只剩版权信息，整列收起
-    const homeRightGone = b.hotTopic && b.hotForum;
-    if (homeRightGone) hideSels.push('.home-page-wrapper .right-nav-bar');
     hideSels.push(...cfg.selectors.filter(validSel));
     for (const s of hideSels) {
       out.push(`html:not(.tn-reveal) :is(${s}) { display: none !important; }`);
@@ -85,12 +99,9 @@ html.tn-reveal [data-tn-hide] { outline: 2px dashed #f56c6c !important; opacity:
     }
 
     if (cfg.wide) {
-      // 侧栏宽度取自站点实测值；关闭后不占位。正文列统一使用 --tn-content，
-      // 让四类页面在相同窗口下得到相同的正文宽度，窗口不足时一起收缩。
-      const homeSide = homeRightGone ? '0px' : 'calc(316px + var(--tn-side-gap))';
-      const frsSide = b.frsSidebar ? '0px' : 'calc(332px + var(--tn-side-gap))';
-      const postSide = b.postSidebar ? '0px' : 'calc(316px + var(--tn-side-gap))';
-      const profileSide = b.profileSidebar ? '0px' : 'calc(316px + var(--tn-side-gap))';
+      // 侧栏总开关关闭时保留栏位；打开时整列隐藏，正文占满。
+      const sidebarsShown = !b.rightSidebar;
+      const slot = sidebarsShown ? 'calc(332px + var(--tn-side-gap))' : '0px';
       const nav = b.leftNav ? '0px' : 'var(--tn-nav)';
       const navMedia = b.leftNav ? '' : `
 @media (max-width: 1006px) { :root { --tn-nav: 211px; } }
@@ -100,7 +111,7 @@ html.tn-reveal [data-tn-hide] { outline: 2px dashed #f56c6c !important; opacity:
   --tn-page: ${cssLen(cfg.pageWidth, '100vw')};
   --tn-col: ${cssLen(cfg.colWidth, '100%')};
   --tn-media: ${cssLen(cfg.mediaWidth, '100%')};
-  --tn-gutter: clamp(16px, 3vw, 60px);
+  --tn-gutter: clamp(16px, 1.5vw, 24px);
   --tn-nav: ${b.leftNav ? '0px' : '261px'};
   --tn-side-gap: 36px;
   --tn-scrollbar: 16px;
@@ -112,6 +123,25 @@ html.tn-reveal [data-tn-hide] { outline: 2px dashed #f56c6c !important; opacity:
 @media screen and (min-width: 1920px) {
   .top-nav-bar { width: min(100vw, var(--tn-page)) !important; }
 }
+${b.leftNav ? '' : `
+.pc-main-page-layout .content-container .left-content { box-sizing: border-box !important; flex: 0 0 var(--tn-nav) !important; width: var(--tn-nav) !important; }
+.pc-main-page-layout .content-container .main-content { flex: 1 1 0% !important; margin-left: 0 !important; width: auto !important; }
+`}
+
+/* 吧页、个人主页、帖子页的滚动容器原本铺满主区域，滚动条会贴在窗口最右侧。
+   收窄到版心后，滚动条紧贴正文框架，视觉上不再远离内容。 */
+.frs-page-wrap,
+.usercenter-page-wrapper,
+.pb-page-wrapper {
+  width: min(100%, calc(var(--tn-content) + ${slot} + var(--tn-gutter) + var(--tn-gutter))) !important;
+  margin-inline: auto !important;
+}
+/* 宽屏时把正文轴心从“左侧导航右侧”移到整个视口，左右留白对称。 */
+html.tn-screen-center :is(.home-page-wrapper > .container, .frs-page-wrap, .usercenter-page-wrapper, .pb-page-wrapper) {
+  position: relative !important;
+  left: calc(var(--tn-nav) / -2) !important;
+}
+.pc-main-page-layout .content-container .left-content { z-index: 9 !important; }
 
 /* 首页：侧栏放不下时换到正文下方，正文保持统一宽度。 */
 .home-page-wrapper > .container {
@@ -119,13 +149,12 @@ html.tn-reveal [data-tn-hide] { outline: 2px dashed #f56c6c !important; opacity:
   flex-wrap: wrap !important;
   align-items: flex-start !important;
   justify-content: center !important;
-  column-gap: var(--tn-side-gap) !important;
-  row-gap: 24px !important;
+  column-gap: 0 !important;
   width: 100% !important;
-  max-width: calc(var(--tn-content) + ${homeSide} + var(--tn-gutter) + var(--tn-gutter)) !important;
+  max-width: calc(var(--tn-content) + ${slot} + var(--tn-gutter) + var(--tn-gutter)) !important;
   margin-inline: auto !important;
-  /* 该容器自身滚动，经典滚动条约占 16px；留白各减 8px 补偿，正文宽度才与其它页面一致。 */
-  padding-inline: calc(var(--tn-gutter) - 8px) !important;
+  padding-top: 20px !important;
+  padding-inline: var(--tn-gutter) !important;
 }
 .home-page-wrapper .center-content {
   flex: 0 1 var(--tn-content) !important;
@@ -134,26 +163,37 @@ html.tn-reveal [data-tn-hide] { outline: 2px dashed #f56c6c !important; opacity:
   max-width: 100% !important;
   margin-right: 0 !important;
 }
+.home-page-wrapper .center-content .thread-container { margin-top: 0 !important; }
+.home-page-wrapper .thread-title,
+.frs-feed-list .thread-title,
+.usercenter-content-wrapper .thread-title { font-size: 15px !important; }
 .home-page-wrapper .right-nav-bar {
-  flex: 0 0 316px !important;
-  width: 316px !important;
+  flex: 0 0 332px !important;
+  width: 332px !important;
   max-width: 100% !important;
+  margin-left: var(--tn-side-gap) !important;
 }
 
 /* 吧页 */
 .frs-page-wrap .frs-page-container {
   box-sizing: border-box !important;
   width: 100% !important;
-  max-width: calc(var(--tn-content) + ${frsSide} + var(--tn-gutter) + var(--tn-gutter)) !important;
+  max-width: calc(var(--tn-content) + ${slot} + var(--tn-gutter) + var(--tn-gutter)) !important;
   margin-inline: auto !important;
+  padding-top: 20px !important;
   padding-inline: var(--tn-gutter) !important;
 }
+.frs-page-wrap .frs-page-container :is(.head-pic-area, .forum-head-container) {
+  width: var(--tn-content) !important;
+  max-width: 100% !important;
+}
+.frs-page-container.tn-centered :is(.head-pic-area, .forum-head-container),
+.usercenter-page-wrapper.tn-centered .user-top-info-wrapper { margin-inline: auto !important; }
 .frs-page-wrap .frs-page-container .frs-main-container {
   flex-wrap: wrap !important;
   align-items: flex-start !important;
   justify-content: center !important;
-  column-gap: var(--tn-side-gap) !important;
-  row-gap: 24px !important;
+  column-gap: 0 !important;
 }
 .frs-page-wrap .frs-page-container .frs-main-container .left-container {
   flex: 0 1 var(--tn-content) !important;
@@ -165,14 +205,14 @@ html.tn-reveal [data-tn-hide] { outline: 2px dashed #f56c6c !important; opacity:
   flex: 0 0 332px !important;
   width: 332px !important;
   max-width: 100% !important;
-  margin-left: 0 !important;
+  margin-left: var(--tn-side-gap) !important;
 }
 
 /* 个人主页 */
 .usercenter-page-wrapper > :is(.user-information-wrapper, .usercenter-content-wrapper) {
   box-sizing: border-box !important;
   width: 100% !important;
-  max-width: calc(var(--tn-content) + ${profileSide} + var(--tn-gutter) + var(--tn-gutter)) !important;
+  max-width: calc(var(--tn-content) + ${slot} + var(--tn-gutter) + var(--tn-gutter)) !important;
   margin-inline: auto !important;
   padding-inline: var(--tn-gutter) !important;
 }
@@ -180,8 +220,12 @@ html.tn-reveal [data-tn-hide] { outline: 2px dashed #f56c6c !important; opacity:
   flex-wrap: wrap !important;
   align-items: flex-start !important;
   justify-content: center !important;
-  column-gap: var(--tn-side-gap) !important;
-  row-gap: 24px !important;
+  column-gap: 0 !important;
+}
+.usercenter-page-wrapper .user-information-wrapper { margin-top: 20px !important; }
+.usercenter-page-wrapper .user-information-wrapper .user-top-info-wrapper {
+  width: var(--tn-content) !important;
+  max-width: 100% !important;
 }
 .usercenter-page-wrapper .usercenter-content-wrapper > .center-content {
   flex: 0 1 var(--tn-content) !important;
@@ -190,10 +234,10 @@ html.tn-reveal [data-tn-hide] { outline: 2px dashed #f56c6c !important; opacity:
   max-width: 100% !important;
 }
 .usercenter-page-wrapper .usercenter-content-wrapper > .right-nav-bar {
-  flex: 0 0 316px !important;
-  width: 316px !important;
+  flex: 0 0 332px !important;
+  width: 332px !important;
   max-width: 100% !important;
-  margin-left: 0 !important;
+  margin-left: var(--tn-side-gap) !important;
 }
 
 /* 帖子页 */
@@ -202,10 +246,9 @@ html.tn-reveal [data-tn-hide] { outline: 2px dashed #f56c6c !important; opacity:
   flex-wrap: wrap !important;
   align-items: flex-start !important;
   justify-content: center !important;
-  column-gap: var(--tn-side-gap) !important;
-  row-gap: 24px !important;
+  column-gap: 0 !important;
   width: 100% !important;
-  max-width: calc(var(--tn-content) + ${postSide} + var(--tn-gutter) + var(--tn-gutter)) !important;
+  max-width: calc(var(--tn-content) + ${slot} + var(--tn-gutter) + var(--tn-gutter)) !important;
   margin-inline: auto !important;
   padding-inline: var(--tn-gutter) !important;
 }
@@ -215,12 +258,14 @@ html.tn-reveal [data-tn-hide] { outline: 2px dashed #f56c6c !important; opacity:
   min-width: 0 !important;
   max-width: 100% !important;
   margin-inline: 0 !important;
+  padding-top: 20px !important;
 }
+.pb-page-wrapper .pc-pb-title .pb-title { font-size: 15px !important; line-height: 1.45 !important; }
 .pb-page-wrapper .pc-pb-box > .container > .right-nav-bar {
-  flex: 0 0 316px !important;
-  width: 316px !important;
+  flex: 0 0 332px !important;
+  width: 332px !important;
   max-width: 100% !important;
-  margin-left: 0 !important;
+  margin-left: var(--tn-side-gap) !important;
 }
 .pb-page-wrapper .pc-pb-box > .container,
 .pb-page-wrapper .pc-pb-title { min-width: 0 !important; }
@@ -347,9 +392,66 @@ html.tn-reveal [data-tn-hide] { outline: 2px dashed #f56c6c !important; opacity:
   function schedule() {
     if (!timer) timer = setTimeout(flush, 150);
   }
+  function syncScreenCenter() {
+    const root = document.documentElement;
+    const nav = document.querySelector('.pc-main-page-layout .left-content');
+    const content = document.querySelector('.home-page-wrapper .center-content, .frs-feed-list, .usercenter-content-wrapper > .center-content, .pc-pb-box > .container > .center-content');
+    const side = document.querySelector('.home-page-wrapper .right-nav-bar, .frs-right-sidebar, .usercenter-content-wrapper > .right-nav-bar, .pb-page-wrapper .right-nav-bar');
+    const sideShown = side && side.getClientRects().length > 0 && getComputedStyle(side).display !== 'none';
+    if (!cfg.wide || !nav || !content || nav.offsetWidth < 40 || getComputedStyle(nav).display === 'none' || sideShown) {
+      root.classList.remove('tn-screen-center');
+      return;
+    }
+    const vw = document.documentElement.clientWidth;
+    const navWidth = parseFloat(getComputedStyle(root).getPropertyValue('--tn-nav')) || nav.offsetWidth;
+    const centeredLeft = (vw - content.getBoundingClientRect().width) / 2;
+    root.classList.toggle('tn-screen-center', centeredLeft >= navWidth + 12);
+  }
+  function syncTopNav() {
+    const root = document.documentElement;
+    const top = document.querySelector('.top-nav-bar');
+    const logo = top?.querySelector('.home-left');
+    const search = top?.querySelector('.search-mid');
+    const menu = top?.querySelector('.right-menu');
+    const frame = document.querySelector('.frs-page-wrap, .home-page-wrapper > .container, .usercenter-page-wrapper, .pb-page-wrapper');
+    if (!top || !logo || !search || !menu || !frame) {
+      root.classList.remove('tn-top-center');
+      root.style.removeProperty('--tn-search-shift');
+      return;
+    }
+    // getBoundingClientRect 已包含当前位移，先减掉它再计算新的目标位移。
+    const current = parseFloat(getComputedStyle(root).getPropertyValue('--tn-search-shift')) || 0;
+    const sr = search.getBoundingClientRect();
+    const searchCenter = sr.left + sr.width / 2 - current;
+    const fr = frame.getBoundingClientRect();
+    const target = fr.left + fr.width / 2;
+    const half = sr.width / 2;
+    const fits = target - half >= logo.getBoundingClientRect().right + 12
+      && target + half <= menu.getBoundingClientRect().left - 12;
+    root.classList.toggle('tn-top-center', fits);
+    if (fits) root.style.setProperty('--tn-search-shift', `${Math.round((target - searchCenter) * 10) / 10}px`);
+    else root.style.removeProperty('--tn-search-shift');
+  }
+  function syncCenteredHeaders() {
+    const mark = (hostSel, frameSel, contentSel) => {
+      const host = document.querySelector(hostSel);
+      const frame = document.querySelector(frameSel);
+      const content = document.querySelector(contentSel);
+      if (!host || !frame || !content) return;
+      const pad = parseFloat(getComputedStyle(frame).paddingLeft) || 0;
+      const base = frame.getBoundingClientRect().left + pad;
+      const delta = content.getBoundingClientRect().left - base;
+      host.classList.toggle('tn-centered', Math.abs(delta) > 2);
+    };
+    mark('.frs-page-container', '.frs-page-container', '.frs-feed-list');
+    mark('.usercenter-page-wrapper', '.usercenter-content-wrapper', '.usercenter-content-wrapper > .center-content');
+  }
   function flush() {
     timer = 0;
     applyCss();
+    syncScreenCenter();
+    syncTopNav();
+    syncCenteredHeaders();
     scanKeywords();
   }
 
@@ -357,6 +459,17 @@ html.tn-reveal [data-tn-hide] { outline: 2px dashed #f56c6c !important; opacity:
   resetKeywords();
   new MutationObserver(schedule).observe(document.documentElement, { childList: true, subtree: true, characterData: true });
   document.addEventListener('DOMContentLoaded', flush);
+  window.addEventListener('resize', () => { clearTimeout(timer); timer = 0; flush(); });
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.back-btn');
+    if (!btn || btn.closest('#tn-root')) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    let canBack = false;
+    try { canBack = history.length > 1 && new URL(document.referrer || 'about:blank').origin === location.origin; } catch {}
+    if (canBack) history.back();
+    else location.href = 'https://tieba.baidu.com/';
+  }, true);
 
   /* ============================ 点选屏蔽 ============================ */
 

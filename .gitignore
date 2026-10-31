@@ -1,14 +1,4 @@
-# 原始页面可能包含账号、会话和私人内容。
+# 本地临时保存的页面可能包含个人信息，不提交。
 /*.html
-/snapshots/raw/*
-!/snapshots/raw/.gitkeep
 
-# 本地生成的脱敏快照和验证产物。
-/snapshots/sanitized/*
-!/snapshots/sanitized/.gitkeep
-/artifacts/*
-!/artifacts/.gitkeep
-
-__pycache__/
-*.py[cod]
 *.log
