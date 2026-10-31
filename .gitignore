@@ -1,4 +1,18 @@
-# 本地临时保存的页面可能包含个人信息，不提交。
-/*.html
+# 本地临时保存的页面、截图、图片和文档只用于本地排查，不提交。
+*.html
+*.htm
+*.mht
+*.mhtml
 
+*.jpeg
+*.jpg
+*.png
+*.gif
+*.webp
+*.bmp
+*.ico
+*.avif
+*.svg
+
+*.txt
 *.log
