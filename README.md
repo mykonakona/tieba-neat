@@ -8,7 +8,7 @@
 
 [![安装](https://img.shields.io/badge/%E5%AE%89%E8%A3%85%E8%84%9A%E6%9C%AC-Tampermonkey%20%2F%20Violentmonkey-2ea44f?style=for-the-badge)](https://raw.githubusercontent.com/mykonakona/tieba-neat/main/tieba-neat.user.js)
 
-安装前请确认浏览器已 [Violentmonkey](https://violentmonkey.github.io/)或 [Tampermonkey](https://www.tampermonkey.net/) 等扩展。
+使用前请确认浏览器已安装 [Tampermonkey](https://www.tampermonkey.net/) 或 [Violentmonkey](https://violentmonkey.github.io/) 扩展。
 
 ## 功能
 
