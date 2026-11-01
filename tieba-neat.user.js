@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         贴吧清爽宽屏 Tieba Neat
 // @namespace    tieba-neat
-// @version      0.4.3
-// @description  仅适用于新版贴吧桌面布局：宽屏居中、统一背景与文字配色，隐藏广告和推荐栏目
+// @version      0.6.0
+// @description  仅适用于新版贴吧桌面布局：宽屏居中、统一背景与文字配色，隐藏广告和推荐栏目，可切换首页关注 / 推荐
 // @author       mykonakona
 // @match        *://tieba.baidu.com/*
 // @run-at       document-start
@@ -27,7 +27,7 @@
     { id: 'leftNav', name: '左侧导航栏', sel: '.pc-main-page-layout .left-content, .pc-main-page-layout .collapse-btn', on: false },
   ];
 
-  const CONFIG_VERSION = 11;
+  const CONFIG_VERSION = 13;
 
   const DEFAULTS = {
     version: CONFIG_VERSION,
@@ -39,6 +39,7 @@
     keywords: ['最有料', '相关推荐', '猜你喜欢', '为你推荐', '大家都在看', '大家都在搜'],
     bgOn: true,
     bgColor: '#f2f3f5',
+    feedMode: 'all',
   };
 
   function loadCfg() {
@@ -61,6 +62,15 @@
       out.keywords = DEFAULTS.keywords;
       delete out.selectors;
     }
+    if (!saved.version || saved.version < 13) {
+      const follow = saved.feedFollowed;
+      const rec = saved.feedRecommended;
+      out.feedMode = follow === true && rec === false ? 'follow'
+        : follow === false && rec === true ? 'recommended'
+          : 'all';
+    }
+    delete out.feedFollowed;
+    delete out.feedRecommended;
     if (saved.version !== CONFIG_VERSION) {
       out.version = CONFIG_VERSION;
       GM_setValue('cfg', out);
@@ -536,6 +546,127 @@ html.tn-light-bg body {
   function schedule() {
     if (!timer) timer = setTimeout(flush, 150);
   }
+
+  const FEED_ITEM_MIN = 6;
+  const FEED_MAX_LOADS = 16;
+  const FEED_CALL_GAP = 300;
+  const FEED_RETRY_MS = 300;
+  let feedRetryTimer = 0;
+  const feedKeyMap = new WeakMap();
+  let feedKeySeq = 0;
+  const feedKey = (item) => {
+    if (!item || typeof item !== 'object') return '';
+    if (item.id != null) return `i${item.id}`;
+    if (item.tid != null) return `t${item.tid}`;
+    if (!feedKeyMap.has(item)) feedKeyMap.set(item, `o${++feedKeySeq}`);
+    return feedKeyMap.get(item);
+  };
+  const isFollowedItem = (item) => {
+    const b = item?.businessInfo;
+    if (!b) return false;
+    if (b.forum_is_liked != null) return String(b.forum_is_liked) === '1';
+    return b.forum_is_liked_mock === true || b.forum_is_liked_mock === 1;
+  };
+  const isRecommendedItem = (item) => {
+    const b = item?.businessInfo;
+    if (!b) return false;
+    if (b.forum_is_liked != null) return String(b.forum_is_liked) === '0';
+    return b.forum_is_liked_mock === false || b.forum_is_liked_mock === 0;
+  };
+  const sameList = (a, b) => a.length === b.length && a.every((item, i) => item === b[i]);
+  let feedState = { vm: null, master: [], seen: new Set(), filtered: false, mode: '', loads: 0, last: 0, unwatch: null };
+
+  function feedVm() {
+    let vm = document.querySelector('.home-page-wrapper .thread-container')?.__vue__;
+    for (let i = 0; vm && i < 6; i++, vm = vm.$parent) {
+      if (Array.isArray(vm.feedList)) return vm;
+    }
+    return null;
+  }
+
+  function syncFeedFilter() {
+    const vm = feedVm();
+    if (!vm) return null;
+    if (feedState.vm !== vm) {
+      if (feedState.unwatch) {
+        try { feedState.unwatch(); } catch { /* component already torn down */ }
+      }
+      feedState = { vm, master: [], seen: new Set(), filtered: false, mode: cfg.feedMode, loads: 0, last: 0, unwatch: null };
+      if (typeof vm.$watch === 'function') {
+        try {
+          feedState.unwatch = vm.$watch('feedList', () => { syncFeedFilter(); }, { deep: false });
+        } catch { /* ignore */ }
+      }
+    }
+    if (feedState.mode !== cfg.feedMode) {
+      feedState.mode = cfg.feedMode;
+      feedState.loads = 0;
+      feedState.last = 0;
+    }
+    const list = Array.isArray(vm.feedList) ? vm.feedList : [];
+    if (feedState.filtered) {
+      for (const item of list) {
+        const key = feedKey(item);
+        if (feedState.seen.has(key)) continue;
+        feedState.seen.add(key);
+        feedState.master.push(item);
+      }
+    } else {
+      feedState.master = list.slice();
+      feedState.seen = new Set(list.map(feedKey));
+    }
+    let desired = null;
+    if (cfg.feedMode === 'follow') desired = feedState.master.filter(isFollowedItem);
+    else if (cfg.feedMode === 'recommended') desired = feedState.master.filter(isRecommendedItem);
+    else if (feedState.filtered) desired = feedState.master.slice();
+    if (desired && !sameList(list, desired)) {
+      try { vm.feedList = desired; } catch { return vm; }
+    }
+    feedState.filtered = cfg.feedMode !== 'all';
+    return vm;
+  }
+
+  function queueFeedRetry() {
+    if (feedRetryTimer) return;
+    feedRetryTimer = setTimeout(() => {
+      feedRetryTimer = 0;
+      syncFeedLoad(syncFeedFilter());
+    }, FEED_RETRY_MS);
+  }
+
+  function syncFeedLoad(vm) {
+    if (!vm || (cfg.feedMode !== 'follow' && cfg.feedMode !== 'recommended')) {
+      clearTimeout(feedRetryTimer);
+      feedRetryTimer = 0;
+      feedState.loads = 0;
+      return;
+    }
+    if (!Array.isArray(vm.feedList) || vm.feedList.length >= FEED_ITEM_MIN) {
+      clearTimeout(feedRetryTimer);
+      feedRetryTimer = 0;
+      feedState.loads = 0;
+      return;
+    }
+    if (feedState.loads >= FEED_MAX_LOADS) {
+      clearTimeout(feedRetryTimer);
+      feedRetryTimer = 0;
+      return;
+    }
+    if (vm.hasMore === false || vm.feedLoadMoreError || typeof vm.loadMore !== 'function') {
+      clearTimeout(feedRetryTimer);
+      feedRetryTimer = 0;
+      return;
+    }
+    const now = Date.now();
+    if (vm.loadMoreLoading || vm.initLoading || now - feedState.last < FEED_CALL_GAP) {
+      queueFeedRetry();
+      return;
+    }
+    feedState.loads++;
+    feedState.last = now;
+    try { vm.loadMore(); } catch { /* site internals changed */ }
+    queueFeedRetry();
+  }
   function syncScreenCenter() {
     const root = document.documentElement;
     const nav = document.querySelector('.pc-main-page-layout .left-content');
@@ -638,6 +769,7 @@ html.tn-light-bg body {
   function flush() {
     timer = 0;
     applyCss();
+    syncFeedLoad(syncFeedFilter());
     syncScreenCenter();
     syncTopNav();
     syncCenteredHeaders();
@@ -714,6 +846,13 @@ html.tn-light-bg body {
   <div class="tn-hint">填了有效颜色代码就以它为准，留空则使用上面的预设。auto 跟随站点浅色 / 深色模式；背景为深色时文字自动变浅。</div>
   <h3>布局</h3>
   <label><input type="checkbox" data-k="leftNav"> 屏蔽左侧导航栏</label>
+  <h3>帖子列表</h3>
+  <div class="tn-row"><span>显示内容</span><select data-k="feedMode">
+    <option value="all">关注 + 推荐</option>
+    <option value="follow">只看关注</option>
+    <option value="recommended">只看推荐</option>
+  </select></div>
+  <div class="tn-hint">只看关注 / 只看推荐时会自动补载同类帖子，避免列表只剩一条；切换回来不会丢失另一类。</div>
   <div class="tn-btns">
     <button data-act="reset">恢复默认</button>
     <button data-act="close">取消</button>
@@ -729,6 +868,7 @@ html.tn-light-bg body {
     $('[data-k=bgCustom]').value = isPreset ? '' : cfg.bgColor;
     for (const k of ['pageWidth', 'colWidth', 'mediaWidth']) $(`[data-k=${k}]`).value = cfg[k];
     $('[data-k=leftNav]').checked = !!cfg.blocks.leftNav;
+    $('[data-k=feedMode]').value = cfg.feedMode || 'all';
     root.addEventListener('click', (e) => {
       if (e.target === root) return closePanel();
       const act = e.target.dataset?.act;
@@ -746,6 +886,8 @@ html.tn-light-bg body {
         cfg.bgColor = bgRaw;
         for (const k of ['pageWidth', 'colWidth', 'mediaWidth']) cfg[k] = $(`[data-k=${k}]`).value.trim() || DEFAULTS[k];
         cfg.blocks.leftNav = $('[data-k=leftNav]').checked;
+        const feedMode = $('[data-k=feedMode]').value;
+        cfg.feedMode = ['all', 'follow', 'recommended'].includes(feedMode) ? feedMode : 'all';
         commit();
       }
     });
