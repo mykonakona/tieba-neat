@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贴吧清爽宽屏 Tieba Neat
 // @namespace    tieba-neat
-// @version      0.6.0
+// @version      0.6.1
 // @description  仅适用于新版贴吧桌面布局：宽屏居中、统一背景与文字配色，隐藏广告和推荐栏目，可切换首页关注 / 推荐
 // @author       mykonakona
 // @match        *://tieba.baidu.com/*
@@ -16,13 +16,29 @@
 (function () {
   'use strict';
 
+  // SPA route changes do not update document.referrer, so count same-document pushes to
+  // know whether history.back() still stays inside Tieba.
+  let internalNav = 0;
+  try {
+    const pushState = history.pushState;
+    history.pushState = function (...args) {
+      const before = location.href;
+      const ret = Reflect.apply(pushState, this, args);
+      if (location.href !== before) internalNav++;
+      return ret;
+    };
+    window.addEventListener('popstate', () => {
+      if (internalNav > 0) internalNav--;
+    });
+  } catch { /* History API unavailable */ }
+
   const BLOCKS = [
     { id: 'rightSidebar', name: '右侧栏（首页 / 吧页 / 个人页 / 帖子页）', on: true,
       sel: '.home-page-wrapper .right-nav-bar, .frs-right-sidebar, .usercenter-content-wrapper > .right-nav-bar, .pb-page-wrapper .right-nav-bar' },
     { id: 'ads', name: '广告 / 下载 App 引导', on: true,
       sel: '.ad-banner-wrapper, .feed-ad-container, .feed-ad-placeholder, [data-key^="ad__"], .tb-ad-wrap, .native-ad-wrap, .brise-pb-ad, .dasense-ad, .ad-container, .app-download-box, .tb-bottom-banner' },
     { id: 'topExtras', name: '顶部推广图标（保留消息）', on: true,
-      sel: '.top-nav-bar :is(.menu-item, [class*="menu-item"]):not(:has(use[*|href*="message" i], use[*|href*="feedback" i], use[*|href*="back_old" i])), .top-nav-bar .menu-list:has(use[*|href*="message" i]) > :not(:has(use[*|href*="message" i]))' },
+      sel: '.top-nav-bar :is(.menu-item, [class*="menu-item"]):not(:has(use[*|href*="message" i], use[*|href*="feedback" i], use[*|href*="back_old" i])), .top-nav-bar .menu-list:has(use[*|href*="message" i]) > :not(:has(use[*|href*="message" i], use[*|href*="feedback" i], use[*|href*="back_old" i]))' },
     { id: 'profileTools', name: '个人主页「常用功能」推广', sel: '.usercenter-page-wrapper .usual-function-wrapper', on: true },
     { id: 'leftNav', name: '左侧导航栏', sel: '.pc-main-page-layout .left-content, .pc-main-page-layout .collapse-btn', on: false },
   ];
@@ -81,7 +97,7 @@
   const cssLen = (v, fallback) => (v && CSS.supports('width', v) ? v : fallback);
   const saveCfg = () => GM_setValue('cfg', cfg);
 
-  const isDarkTheme = () => document.documentElement.classList.contains('darkmode')
+  const isDarkTheme = () => !!document.documentElement?.classList.contains('darkmode')
     || !!document.querySelector('.pc-main-page-layout.dark-layout');
   function bgColor() {
     const raw = (cfg.bgColor || '').trim();
@@ -120,6 +136,7 @@
 .top-nav-bar .tb-home { width: 34px !important; }
 .top-nav-bar .search-mid { max-width: min(800px, 55vw) !important; }
 html.tn-top-center .top-nav-bar .search-mid { transform: translateX(var(--tn-search-shift, 0px)); }
+#tn-feed-empty { padding: 48px 0; text-align: center; font-size: 14px; color: var(--cos-color-text-minor, #848691); }
 `;
 
   function buildCss() {
@@ -441,6 +458,8 @@ html.tn-light-bg body {
 
   let styleEl;
   function applyCss() {
+    const root = document.documentElement;
+    if (!root) return;
     if (!styleEl) {
       styleEl = document.createElement('style');
       styleEl.id = 'tn-style';
@@ -448,10 +467,10 @@ html.tn-light-bg body {
     const css = buildCss();
     const bg = cfg.bgOn ? bgColor() : '';
     const darkBg = !!bg && isDarkColor(bg);
-    document.documentElement.classList.toggle('tn-dark-bg', darkBg);
-    document.documentElement.classList.toggle('tn-light-bg', !!bg && !darkBg);
+    root.classList.toggle('tn-dark-bg', darkBg);
+    root.classList.toggle('tn-light-bg', !!bg && !darkBg);
     if (styleEl.textContent !== css) styleEl.textContent = css;
-    if (!styleEl.isConnected) (document.head || document.documentElement).appendChild(styleEl);
+    if (!styleEl.isConnected) (document.head || root).appendChild(styleEl);
   }
 
   const LAYOUT = [
@@ -549,6 +568,7 @@ html.tn-light-bg body {
 
   const FEED_ITEM_MIN = 6;
   const FEED_MAX_LOADS = 16;
+  const FEED_STALL_LIMIT = 3;
   const FEED_CALL_GAP = 300;
   const FEED_RETRY_MS = 300;
   let feedRetryTimer = 0;
@@ -574,7 +594,7 @@ html.tn-light-bg body {
     return b.forum_is_liked_mock === false || b.forum_is_liked_mock === 0;
   };
   const sameList = (a, b) => a.length === b.length && a.every((item, i) => item === b[i]);
-  let feedState = { vm: null, master: [], seen: new Set(), filtered: false, mode: '', loads: 0, last: 0, unwatch: null };
+  let feedState = { vm: null, master: [], seen: new Set(), filtered: false, mode: '', loads: 0, last: 0, stall: 0, pending: null, unwatch: null };
 
   function feedVm() {
     let vm = document.querySelector('.home-page-wrapper .thread-container')?.__vue__;
@@ -591,7 +611,7 @@ html.tn-light-bg body {
       if (feedState.unwatch) {
         try { feedState.unwatch(); } catch { /* component already torn down */ }
       }
-      feedState = { vm, master: [], seen: new Set(), filtered: false, mode: cfg.feedMode, loads: 0, last: 0, unwatch: null };
+      feedState = { vm, master: [], seen: new Set(), filtered: false, mode: cfg.feedMode, loads: 0, last: 0, stall: 0, pending: null, unwatch: null };
       if (typeof vm.$watch === 'function') {
         try {
           feedState.unwatch = vm.$watch('feedList', () => { syncFeedFilter(); }, { deep: false });
@@ -602,6 +622,8 @@ html.tn-light-bg body {
       feedState.mode = cfg.feedMode;
       feedState.loads = 0;
       feedState.last = 0;
+      feedState.stall = 0;
+      feedState.pending = null;
     }
     const list = Array.isArray(vm.feedList) ? vm.feedList : [];
     if (feedState.filtered) {
@@ -635,19 +657,31 @@ html.tn-light-bg body {
   }
 
   function syncFeedLoad(vm) {
-    if (!vm || (cfg.feedMode !== 'follow' && cfg.feedMode !== 'recommended')) {
+    const filtering = cfg.feedMode === 'follow' || cfg.feedMode === 'recommended';
+    if (!vm || !filtering) {
       clearTimeout(feedRetryTimer);
       feedRetryTimer = 0;
       feedState.loads = 0;
+      feedState.stall = 0;
+      feedState.pending = null;
       return;
+    }
+    // A finished load that added no matching item means the next batch is unlikely to help.
+    if (feedState.pending != null && !vm.loadMoreLoading && !vm.initLoading) {
+      const len = Array.isArray(vm.feedList) ? vm.feedList.length : 0;
+      if (len > feedState.pending) feedState.stall = 0;
+      else feedState.stall++;
+      feedState.pending = null;
     }
     if (!Array.isArray(vm.feedList) || vm.feedList.length >= FEED_ITEM_MIN) {
       clearTimeout(feedRetryTimer);
       feedRetryTimer = 0;
       feedState.loads = 0;
+      feedState.stall = 0;
+      feedState.pending = null;
       return;
     }
-    if (feedState.loads >= FEED_MAX_LOADS) {
+    if (feedState.loads >= FEED_MAX_LOADS || feedState.stall >= FEED_STALL_LIMIT) {
       clearTimeout(feedRetryTimer);
       feedRetryTimer = 0;
       return;
@@ -664,8 +698,28 @@ html.tn-light-bg body {
     }
     feedState.loads++;
     feedState.last = now;
+    feedState.pending = vm.feedList.length;
     try { vm.loadMore(); } catch { /* site internals changed */ }
     queueFeedRetry();
+  }
+
+  function syncFeedEmpty(vm) {
+    const host = document.querySelector('.home-page-wrapper .center-content');
+    const old = document.getElementById('tn-feed-empty');
+    const filtering = cfg.feedMode === 'follow' || cfg.feedMode === 'recommended';
+    const list = vm && Array.isArray(vm.feedList) ? vm.feedList : [];
+    const stalled = !!vm && (feedState.stall >= FEED_STALL_LIMIT || feedState.loads >= FEED_MAX_LOADS
+      || vm.hasMore === false || !!vm.feedLoadMoreError);
+    const show = !!host && !!vm && filtering && !list.length && stalled && !vm.loadMoreLoading && !vm.initLoading;
+    if (!show) {
+      if (old) old.remove();
+      return;
+    }
+    if (old) return;
+    const el = document.createElement('div');
+    el.id = 'tn-feed-empty';
+    el.textContent = cfg.feedMode === 'follow' ? '暂无关注内容' : '暂无推荐内容';
+    host.appendChild(el);
   }
   function syncScreenCenter() {
     const root = document.documentElement;
@@ -768,8 +822,11 @@ html.tn-light-bg body {
   }
   function flush() {
     timer = 0;
+    if (!document.documentElement) return;
     applyCss();
-    syncFeedLoad(syncFeedFilter());
+    const feed = syncFeedFilter();
+    syncFeedLoad(feed);
+    syncFeedEmpty(feed);
     syncScreenCenter();
     syncTopNav();
     syncCenteredHeaders();
@@ -779,10 +836,34 @@ html.tn-light-bg body {
     scanKeywords();
   }
 
-  applyCss();
-  resetKeywords();
-  new MutationObserver(schedule).observe(document.documentElement, { childList: true, subtree: true, characterData: true });
-  new MutationObserver(schedule).observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+  let booted = false;
+  function boot() {
+    if (booted) return;
+    booted = true;
+    applyCss();
+    resetKeywords();
+    const root = document.documentElement;
+    new MutationObserver(schedule).observe(root, { childList: true, subtree: true, characterData: true });
+    new MutationObserver(schedule).observe(root, { attributes: true, attributeFilter: ['class'] });
+  }
+
+  if (document.documentElement) {
+    boot();
+  } else {
+    // document-start can run before <html> exists; boot once the root is available.
+    function whenRoot() {
+      if (!document.documentElement) return;
+      rootWatch.disconnect();
+      document.removeEventListener('readystatechange', whenRoot);
+      boot();
+    }
+    const rootWatch = new MutationObserver(whenRoot);
+    try {
+      rootWatch.observe(document, { childList: true, subtree: true });
+    } catch { /* fall back to readystatechange */ }
+    document.addEventListener('readystatechange', whenRoot);
+  }
+
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', schedule);
   document.addEventListener('DOMContentLoaded', flush);
   window.addEventListener('resize', () => { clearTimeout(timer); timer = 0; flush(); });
@@ -792,7 +873,10 @@ html.tn-light-bg body {
     e.preventDefault();
     e.stopImmediatePropagation();
     let canBack = false;
-    try { canBack = history.length > 1 && new URL(document.referrer || 'about:blank').origin === location.origin; } catch {}
+    try {
+      const sameSiteRef = !!document.referrer && new URL(document.referrer).origin === location.origin;
+      canBack = history.length > 1 && (sameSiteRef || internalNav > 0);
+    } catch { /* ignore */ }
     if (canBack) history.back();
     else location.href = 'https://tieba.baidu.com/';
   }, true);
