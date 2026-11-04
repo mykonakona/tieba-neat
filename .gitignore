@@ -1,9 +1,14 @@
-# 本地临时保存的页面、截图、图片和文档只用于本地排查，不提交。
+# 本地页面快照和验证产物，覆盖 JSON 等未按扩展名忽略的文件。
+/snapshots/
+/artifacts/
+
+# 本地临时页面。
 *.html
 *.htm
 *.mht
 *.mhtml
 
+# 本地截图和图片。
 *.jpeg
 *.jpg
 *.png
@@ -14,5 +19,12 @@
 *.avif
 *.svg
 
+# 本地临时文本和日志。
 *.txt
 *.log
+
+# 可复用的合成夹具（含 HTML、图片和文本）可提交；真实页面快照放在 snapshots/。
+!/tests/fixtures/**
+
+# 开发依赖，夹具目录内同样忽略。
+node_modules/
