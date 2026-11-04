@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贴吧清爽宽屏 Tieba Neat
 // @namespace    tieba-neat
-// @version      0.6.1
+// @version      0.6.2
 // @description  仅适用于新版贴吧桌面布局：宽屏居中、统一背景与文字配色，隐藏广告和推荐栏目，可切换首页关注 / 推荐
 // @author       mykonakona
 // @match        *://tieba.baidu.com/*
@@ -178,6 +178,13 @@ html.tn-top-center .top-nav-bar .search-mid { transform: translateX(var(--tn-sea
 ${b.leftNav ? '' : `
 .pc-main-page-layout .content-container .left-content { box-sizing: border-box !important; flex: 0 0 var(--tn-nav) !important; width: var(--tn-nav) !important; }
 .pc-main-page-layout .content-container .main-content { flex: 1 1 0% !important; margin-left: 0 !important; width: auto !important; }
+/* The site slides the nav off-screen with .is-collapsed while it keeps its flex slot, then pulls the
+   content left by a hard-coded -244px. Reclaim our own nav width instead, so collapsing the nav
+   releases exactly the space it occupies and the content returns to the middle. Keying off the
+   nav's own class keeps this in step with the site transition, with no mutation-timing gap. */
+.pc-main-page-layout .content-container .left-content.is-collapsed ~ .main-content { margin-left: calc(var(--tn-nav) * -1) !important; }
+html.tn-screen-center .pc-main-page-layout .content-container .left-content.is-collapsed ~ .main-content
+  :is(.home-page-wrapper > .container, .frs-page-wrap, .usercenter-page-wrapper, .pb-page-wrapper) { left: 0 !important; }
 `}
 
 .frs-page-wrap,
@@ -732,7 +739,8 @@ html.tn-light-bg body {
       return;
     }
     const vw = document.documentElement.clientWidth;
-    const navWidth = parseFloat(getComputedStyle(root).getPropertyValue('--tn-nav')) || nav.offsetWidth;
+    const navCollapsed = nav.classList.contains('is-collapsed');
+    const navWidth = navCollapsed ? 0 : (parseFloat(getComputedStyle(root).getPropertyValue('--tn-nav')) || nav.offsetWidth);
     const centeredLeft = (vw - content.getBoundingClientRect().width) / 2;
     root.classList.toggle('tn-screen-center', centeredLeft >= navWidth + 12);
   }
@@ -869,7 +877,12 @@ html.tn-light-bg body {
   window.addEventListener('resize', () => { clearTimeout(timer); timer = 0; flush(); });
   document.addEventListener('click', (e) => {
     const btn = e.target.closest('.back-btn');
-    if (!btn || btn.closest('#tn-root')) return;
+    if (!btn || btn.closest('#tn-root')) {
+      // The nav collapse toggle only flips classes on its own subtree; re-check layout after the
+      // site's handler runs so the centred/offset state keeps up with it.
+      if (e.target.closest('.collapse-btn')) schedule();
+      return;
+    }
     e.preventDefault();
     e.stopImmediatePropagation();
     let canBack = false;
