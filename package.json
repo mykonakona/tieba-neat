@@ -1,0 +1,12 @@
+{
+  "name": "tieba-neat",
+  "private": true,
+  "description": "开发用回归测试；主脚本本身不依赖任何运行时库",
+  "scripts": {
+    "check": "node --check tieba-neat.user.js",
+    "test": "node --test tests/*.test.js"
+  },
+  "devDependencies": {
+    "jsdom": "^30.1.3"
+  }
+}

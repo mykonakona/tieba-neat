@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贴吧清爽宽屏 Tieba Neat
 // @namespace    tieba-neat
-// @version      0.6.2
+// @version      0.6.6
 // @description  仅适用于新版贴吧桌面布局：宽屏居中、统一背景与文字配色，隐藏广告和推荐栏目，可切换首页关注 / 推荐
 // @author       mykonakona
 // @match        *://tieba.baidu.com/*
@@ -16,19 +16,54 @@
 (function () {
   'use strict';
 
-  // SPA route changes do not update document.referrer, so count same-document pushes to
-  // know whether history.back() still stays inside Tieba.
-  let internalNav = 0;
+  // SPA route changes do not update document.referrer, and a bare counter cannot tell a back
+  // traversal from a forward one, so remember the URLs the SPA pushed and keep the current
+  // position in that trail. Only pushState arguments are passed through untouched: the site's
+  // history.state is never read or rewritten.
+  const NAV_TRAIL_MAX = 50;
+  let navTrail = [location.href];
+  let navIdx = 0;
   try {
     const pushState = history.pushState;
     history.pushState = function (...args) {
       const before = location.href;
-      const ret = Reflect.apply(pushState, this, args);
-      if (location.href !== before) internalNav++;
+      const ret = pushState.apply(this, args);
+      if (location.href !== before) {
+        navTrail.length = navIdx + 1;
+        navTrail.push(location.href);
+        if (navTrail.length > NAV_TRAIL_MAX) navTrail.shift();
+        navIdx = navTrail.length - 1;
+      }
+      return ret;
+    };
+    const replaceState = history.replaceState;
+    history.replaceState = function (...args) {
+      const ret = replaceState.apply(this, args);
+      if (navIdx >= 0 && navTrail[navIdx] !== location.href) navTrail[navIdx] = location.href;
       return ret;
     };
     window.addEventListener('popstate', () => {
-      if (internalNav > 0) internalNav--;
+      // A one-step traversal almost always lands next to the current position, which tells a back
+      // from a forward without touching history.state. Only a multi-entry jump needs a search;
+      // several entries can share a URL, so ties prefer the earlier entry (i.e. assume back, which
+      // keeps the "anything behind us" answer conservative).
+      if (navIdx >= 0 && navTrail[navIdx - 1] === location.href) {
+        navIdx -= 1;
+        return;
+      }
+      if (navIdx >= 0 && navTrail[navIdx + 1] === location.href) {
+        navIdx += 1;
+        return;
+      }
+      let at = -1;
+      let best = Infinity;
+      for (let i = 0; i < navTrail.length; i++) {
+        if (navTrail[i] !== location.href) continue;
+        const dist = Math.abs(i - Math.max(navIdx, 0));
+        if (dist < best) { best = dist; at = i; }
+      }
+      // -1 means the entry predates this script, so nothing known is behind us.
+      navIdx = at;
     });
   } catch { /* History API unavailable */ }
 
@@ -328,6 +363,12 @@ html.tn-screen-center :is(.home-page-wrapper > .container, .frs-page-wrap, .user
   min-width: 0 !important;
   margin-inline: 0 !important;
 }
+/* The player sits in an unnamed wrapper the site sizes from the video's aspect ratio, so capping
+   only .art-video-player/video leaves that wrapper full width and both stay full width with it.
+   Limit the wrapper instead: it keeps the ratio and the player, video and poster shrink together. */
+.pb-page-wrapper .image-text > div:has(> .art-video-player) {
+  max-width: min(100%, var(--tn-media)) !important;
+}
 .pb-page-wrapper .image-text :is(.art-video-player, video) {
   width: 100% !important;
   max-width: 100% !important;
@@ -528,21 +569,90 @@ html.tn-light-bg body {
   }
 
   let kwSet = new Set();
-  let seen = new WeakSet();
+  // Sections and the title elements that caused them to be hidden. One section can be labelled by
+  // several titles and a title can be replaced while its section is reused, so track both sides.
+  let titleOwner = new WeakMap();
+  let sectionTitles = new WeakMap();
+  // Remember each text node's last scanned data instead of just marking it as seen: the site
+  // recycles text nodes, so a node seen once must still be rescanned when its text changes.
+  let seenText = new WeakMap();
   function resetKeywords() {
     kwSet = new Set(cfg.keywords.map(norm).filter(Boolean));
-    seen = new WeakSet();
+    seenText = new WeakMap();
+    titleOwner = new WeakMap();
+    sectionTitles = new WeakMap();
     document.querySelectorAll('[data-tn-hide^="标题"]').forEach((e) => e.removeAttribute('data-tn-hide'));
   }
 
+  // A keyword can label a section through a text node, an <img alt/title>, or a title element that
+  // is itself the section. Read the text the same way the scan does, otherwise an image title always
+  // looks keyword-free and its section would be revealed and re-hidden on every pass.
+  function titleText(el) {
+    if (!el) return '';
+    return el.tagName === 'IMG' ? (el.alt || el.title || '') : (el.textContent || '');
+  }
+  const isKeywordTitle = (el) => kwSet.has(norm(titleText(el)));
+
+  // Remember which section an element hides, so a later text change can be recognised and reverted.
+  // The owner is recorded even when the title element is the section itself.
+  function trackTitle(el, sec) {
+    titleOwner.set(el, sec);
+    let titles = sectionTitles.get(sec);
+    if (!titles) { titles = new Set(); sectionTitles.set(sec, titles); }
+    titles.add(el);
+  }
+
   function hideByTitle(el, kw) {
-    if (!el || el.closest(USER_TEXT) || el.closest('[data-tn-hide]')) return;
+    // Protected user content (post body, comments, intro) is never hidden, even when it matches.
+    if (!el || el.closest(USER_TEXT)) return false;
+    // Every hit is collected before any hide is applied, so a second keyword title can already sit
+    // inside a section this same pass hid. Record it on that section instead of dropping it: its
+    // text is already marked as scanned, so without an owner it could never be re-evaluated and the
+    // block would be revealed even though this title still matches.
+    const hiddenSec = el.closest('[data-tn-hide]');
+    if (hiddenSec) {
+      if ((hiddenSec.getAttribute('data-tn-hide') || '').startsWith('标题:')) trackTitle(el, hiddenSec);
+      return false;
+    }
     const sec = findSection(el);
-    if (sec) sec.setAttribute('data-tn-hide', `标题:${kw}`);
+    if (!sec) return false;
+    const mark = `标题:${kw}`;
+    const alreadyHidden = sec.getAttribute('data-tn-hide') === mark;
+    if (!alreadyHidden) sec.setAttribute('data-tn-hide', mark);
+    trackTitle(el, sec);
+    return !alreadyHidden;
+  }
+
+  // Revert a hide whose title no longer matches. The title element may have been replaced (the old
+  // node is gone while the section lives on), so decide per section from every recorded title: the
+  // section stays hidden while any recorded title still carries a keyword. That keeps a block with
+  // several keyword titles hidden instead of flapping between hide and reveal.
+  function revealStaleTitles() {
+    let changed = false;
+    for (const sec of document.querySelectorAll('[data-tn-hide]')) {
+      if (!(sec.getAttribute('data-tn-hide') || '').startsWith('标题:')) continue;
+      const titles = sectionTitles.get(sec);
+      let stillLabelled = false;
+      if (titles) {
+        for (const el of [...titles]) {
+          // A tracked title can be moved to another section; only one that still belongs to this
+          // section keeps it hidden, otherwise the old title would pin this section forever.
+          if (el.isConnected && (sec === el || sec.contains(el)) && isKeywordTitle(el)) { stillLabelled = true; continue; }
+          titles.delete(el);
+          if (titleOwner.get(el) === sec) titleOwner.delete(el);
+        }
+      }
+      if (stillLabelled) continue;
+      sec.removeAttribute('data-tn-hide');
+      sectionTitles.delete(sec);
+      changed = true;
+    }
+    return changed;
   }
 
   function scanKeywords() {
-    if (!kwSet.size || !document.body) return;
+    if (!kwSet.size || !document.body) return false;
+    let changed = revealStaleTitles();
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
       acceptNode(n) {
         if (n.nodeType === 1) {
@@ -551,13 +661,13 @@ html.tn-light-bg body {
           }
           return n.tagName === 'IMG' ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
         }
-        return n.data.length <= 24 && !seen.has(n) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
+        return n.data.length <= 24 && seenText.get(n) !== n.data ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
       },
     });
     const hits = [];
     for (let n; (n = walker.nextNode()); ) {
       if (n.nodeType === 3) {
-        seen.add(n);
+        seenText.set(n, n.data);
         const t = norm(n.data);
         if (kwSet.has(t)) hits.push([n.parentElement, t]);
       } else {
@@ -565,12 +675,60 @@ html.tn-light-bg body {
         if (kwSet.has(t)) hits.push([n, t]);
       }
     }
-    for (const [el, kw] of hits) hideByTitle(el, kw);
+    for (const [el, kw] of hits) {
+      if (hideByTitle(el, kw)) changed = true;
+    }
+    // Only a real hide/reveal moves geometry, so only then does the layout need another pass. A hit
+    // that user-text protection rejected changes nothing: rescheduling on it would re-arm the timer
+    // forever on an idle page.
+    return changed;
   }
 
   let timer = 0;
   function schedule() {
     if (!timer) timer = setTimeout(flush, 150);
+  }
+
+  // The site collapses/expands the nav by flipping classes inside the layout and animating a CSS
+  // transition. The final frame emits no mutation of its own, so a pass taken while the transition
+  // still runs would keep an intermediate position. Only the nav's own class flips arm this, and it
+  // re-measures until the nav has stopped moving.
+  const NAV_ANIM = '.left-content.is-animating, .main-content.is-animating';
+  let settleTimer = 0;
+  let settleDeadline = 0;
+  let lastNavGeom = '';
+  function navGeom() {
+    const nav = document.querySelector('.pc-main-page-layout .left-content');
+    if (!nav) return '';
+    const r = nav.getBoundingClientRect();
+    return `${Math.round(r.left)},${Math.round(r.width)}`;
+  }
+  // True only for class flips on the nav elements themselves. Matching ancestors instead would treat
+  // every video-player or feed class change inside the content column as a nav animation and keep
+  // re-arming settle passes while media plays.
+  function isNavClassChange(target) {
+    if (!target || target.nodeType !== 1 || !target.matches) return false;
+    return target.matches('.left-content, .main-content, .collapse-btn');
+  }
+  function waitStable() {
+    settleTimer = 0;
+    if (!document.documentElement) return;
+    const now = navGeom();
+    const moving = !!document.querySelector(NAV_ANIM) || now !== lastNavGeom;
+    lastNavGeom = now;
+    if (moving && Date.now() < settleDeadline) {
+      settleTimer = setTimeout(waitStable, 100);
+      return;
+    }
+    flush();
+  }
+  function scheduleSettle() {
+    if (settleTimer) clearTimeout(settleTimer);
+    settleDeadline = Date.now() + 4000;
+    // Snapshot geometry when motion starts so the first look can tell whether the nav is still
+    // travelling instead of treating "unchanged since this look" as settled.
+    lastNavGeom = navGeom();
+    settleTimer = setTimeout(waitStable, 120);
   }
 
   const FEED_ITEM_MIN = 6;
@@ -659,7 +817,11 @@ html.tn-light-bg body {
     if (feedRetryTimer) return;
     feedRetryTimer = setTimeout(() => {
       feedRetryTimer = 0;
-      syncFeedLoad(syncFeedFilter());
+      const vm = syncFeedFilter();
+      syncFeedLoad(vm);
+      // The retry loop is the only code that runs when the page itself stops mutating, so it
+      // must also finish the empty-state check after it gives up loading.
+      syncFeedEmpty(vm);
     }, FEED_RETRY_MS);
   }
 
@@ -841,7 +1003,7 @@ html.tn-light-bg body {
     syncUserBack();
     syncHomeBack();
     syncReplyBar();
-    scanKeywords();
+    if (scanKeywords()) scheduleSettle();
   }
 
   let booted = false;
@@ -852,7 +1014,30 @@ html.tn-light-bg body {
     resetKeywords();
     const root = document.documentElement;
     new MutationObserver(schedule).observe(root, { childList: true, subtree: true, characterData: true });
-    new MutationObserver(schedule).observe(root, { attributes: true, attributeFilter: ['class'] });
+    // The nav toggle only flips classes on descendants of <html>, so observe class changes on the
+    // whole subtree and finish the layout pass after the accompanying transition ends.
+    const classWatch = new MutationObserver((records) => {
+      let navClass = false;
+      for (const rec of records) {
+        if (rec.attributeName === 'class' && rec.target !== root && isNavClassChange(rec.target)) {
+          navClass = true;
+          break;
+        }
+      }
+      schedule();
+      if (navClass) scheduleSettle();
+    });
+    classWatch.observe(root, { attributes: true, attributeFilter: ['class'], subtree: true });
+    // A recommendation title is often an <img alt/title>, which carries no text at all: without an
+    // alt/title watch, swapping that wording would never reach scanKeywords. IMG is the only element
+    // whose alt/title is read as a title, so the filter stays narrow and, because the script itself
+    // never writes alt/title, this observer cannot drive its own loop.
+    const titleWatch = new MutationObserver((records) => {
+      for (const rec of records) {
+        if (rec.target.tagName === 'IMG' && rec.target !== root) return schedule();
+      }
+    });
+    titleWatch.observe(root, { attributes: true, attributeFilter: ['alt', 'title'], subtree: true });
   }
 
   if (document.documentElement) {
@@ -888,7 +1073,7 @@ html.tn-light-bg body {
     let canBack = false;
     try {
       const sameSiteRef = !!document.referrer && new URL(document.referrer).origin === location.origin;
-      canBack = history.length > 1 && (sameSiteRef || internalNav > 0);
+      canBack = history.length > 1 && (sameSiteRef || navIdx > 0);
     } catch { /* ignore */ }
     if (canBack) history.back();
     else location.href = 'https://tieba.baidu.com/';
