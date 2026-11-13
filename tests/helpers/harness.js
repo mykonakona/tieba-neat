@@ -59,7 +59,7 @@ function installClassListShim(window) {
   };
 }
 
-function createEnv({ html = DEFAULT_HTML, url = 'https://tieba.baidu.com/', cfg = {}, prepare } = {}) {
+function createEnv({ html = DEFAULT_HTML, url = 'https://tieba.baidu.com/', cfg = {}, prepare, captureNavigation = false } = {}) {
   const navErrors = [];
   const virtualConsole = new VirtualConsole();
   virtualConsole.on('jsdomError', (err) => {
@@ -91,7 +91,47 @@ function createEnv({ html = DEFAULT_HTML, url = 'https://tieba.baidu.com/', cfg 
 
   if (prepare) prepare({ window, dom, store });
 
-  window.eval(SCRIPT);
+  // Optional navigation capture: jsdom's Location own properties (href/assign/replace) are
+  // unforgeable, so patching them does nothing. Instead the script is loaded with a lexical
+  // `location` parameter bound to a proxy that records href/assign/replace targets while every
+  // read still resolves through the real window.location. Without captureNavigation the script is
+  // evaluated exactly as before, so other tests see ordinary jsdom navigation errors.
+  const navigations = [];
+  if (captureNavigation) {
+    const real = window.location;
+    const record = (value, base = real.href) => {
+      let href;
+      try {
+        href = new URL(String(value), base).href;
+      } catch {
+        href = String(value);
+      }
+      navigations.push(href);
+    };
+    const shim = {
+      get href() { return real.href; },
+      set href(value) { record(value); },
+      get origin() { return real.origin; },
+      get protocol() { return real.protocol; },
+      get host() { return real.host; },
+      get hostname() { return real.hostname; },
+      get port() { return real.port; },
+      get pathname() { return real.pathname; },
+      get search() { return real.search; },
+      get hash() { return real.hash; },
+      assign(value) { record(value); },
+      replace(value) { record(value); },
+      reload() {},
+      toString() { return real.href; },
+    };
+    window.__tnLocationCapture = shim;
+  }
+
+  if (captureNavigation) {
+    window.eval(`(function (location) {\n${SCRIPT}\n})(window.__tnLocationCapture);`);
+  } else {
+    window.eval(SCRIPT);
+  }
 
   const doc = window.document;
   const env = {
@@ -104,6 +144,9 @@ function createEnv({ html = DEFAULT_HTML, url = 'https://tieba.baidu.com/', cfg 
     configVersion: CONFIG_VERSION,
     get navErrors() { return navErrors.slice(); },
     navigationCount() { return navErrors.filter((m) => m.includes(NAV_ERROR)).length; },
+    // Targets captured from `location.href = ...` / assign / replace while captureNavigation is on.
+    navigations,
+    lastNavigation() { return navigations.length ? navigations[navigations.length - 1] : ''; },
     // A window resize always asks the script for a full synchronous flush.
     flush() { window.dispatchEvent(new window.Event('resize')); },
     pushState(href, state = {}) { window.history.pushState(state, '', href); },

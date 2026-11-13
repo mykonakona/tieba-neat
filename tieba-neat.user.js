@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贴吧清爽宽屏 Tieba Neat
 // @namespace    tieba-neat
-// @version      0.6.9
+// @version      0.6.10
 // @description  仅适用于新版贴吧桌面布局：宽屏居中、统一背景与文字配色，隐藏广告和推荐栏目，可切换首页关注 / 推荐
 // @author       mykonakona
 // @match        *://tieba.baidu.com/*
@@ -15,57 +15,6 @@
 
 (function () {
   'use strict';
-
-  // SPA route changes do not update document.referrer, and a bare counter cannot tell a back
-  // traversal from a forward one, so remember the URLs the SPA pushed and keep the current
-  // position in that trail. Only pushState arguments are passed through untouched: the site's
-  // history.state is never read or rewritten.
-  const NAV_TRAIL_MAX = 50;
-  let navTrail = [location.href];
-  let navIdx = 0;
-  try {
-    const pushState = history.pushState;
-    history.pushState = function (...args) {
-      const before = location.href;
-      const ret = pushState.apply(this, args);
-      if (location.href !== before) {
-        navTrail.length = navIdx + 1;
-        navTrail.push(location.href);
-        if (navTrail.length > NAV_TRAIL_MAX) navTrail.shift();
-        navIdx = navTrail.length - 1;
-      }
-      return ret;
-    };
-    const replaceState = history.replaceState;
-    history.replaceState = function (...args) {
-      const ret = replaceState.apply(this, args);
-      if (navIdx >= 0 && navTrail[navIdx] !== location.href) navTrail[navIdx] = location.href;
-      return ret;
-    };
-    window.addEventListener('popstate', () => {
-      // A one-step traversal almost always lands next to the current position, which tells a back
-      // from a forward without touching history.state. Only a multi-entry jump needs a search;
-      // several entries can share a URL, so ties prefer the earlier entry (i.e. assume back, which
-      // keeps the "anything behind us" answer conservative).
-      if (navIdx >= 0 && navTrail[navIdx - 1] === location.href) {
-        navIdx -= 1;
-        return;
-      }
-      if (navIdx >= 0 && navTrail[navIdx + 1] === location.href) {
-        navIdx += 1;
-        return;
-      }
-      let at = -1;
-      let best = Infinity;
-      for (let i = 0; i < navTrail.length; i++) {
-        if (navTrail[i] !== location.href) continue;
-        const dist = Math.abs(i - Math.max(navIdx, 0));
-        if (dist < best) { best = dist; at = i; }
-      }
-      // -1 means the entry predates this script, so nothing known is behind us.
-      navIdx = at;
-    });
-  } catch { /* History API unavailable */ }
 
   const BLOCKS = [
     { id: 'rightSidebar', name: '右侧栏（首页 / 吧页 / 个人页 / 帖子页）', on: true,
@@ -1025,6 +974,23 @@ html.tn-light-bg body {
   }
   let postNavResize;
   let postNavBox;
+  // Shared by the custom post nav and the site's own post floating back button: the current forum
+  // list URL, validated (same origin, /f, non-empty kw). Only when the native link is missing does
+  // it fall back to the search bar's forum name tag.
+  function getPostForumUrl(frame) {
+    const link = frame.querySelector('.enter-forum-wrapper a.forum-info-left');
+    try {
+      const url = new URL(link?.getAttribute('href') || '', location.href);
+      if (link && url.origin === location.origin && url.pathname === '/f' && url.searchParams.get('kw')) return url.href;
+    } catch { /* wait for the site's forum data */ }
+    // Below the site's sidebar breakpoint the entire native forum card is unmounted. The search bar
+    // still shows the current forum; its dedicated name node excludes the 吧 suffix.
+    if (!link) {
+      const name = document.querySelector('.top-nav-bar .frs-search-tag .forum-name-main')?.textContent.trim();
+      if (name) return `${location.origin}/f?kw=${encodeURIComponent(name)}`;
+    }
+    return '';
+  }
   function syncPostNav() {
     const frame = document.querySelector('.pb-page-wrapper');
     const box = frame?.querySelector('.pc-pb-box');
@@ -1048,18 +1014,7 @@ html.tn-light-bg body {
     }
     // Use the site's explicit current-forum link, not referrer/history (which may be another
     // post, search, or an external page). Validate it before exposing a navigation target.
-    const link = frame.querySelector('.enter-forum-wrapper a.forum-info-left');
-    let forumUrl = '';
-    try {
-      const url = new URL(link?.getAttribute('href') || '', location.href);
-      if (link && url.origin === location.origin && url.pathname === '/f' && url.searchParams.get('kw')) forumUrl = url.href;
-    } catch { /* wait for the site's forum data */ }
-    // Below the site's sidebar breakpoint the entire native forum card is unmounted. The
-    // search bar still shows the current forum; its dedicated name node excludes the 吧 suffix.
-    if (!link) {
-      const name = document.querySelector('.top-nav-bar .frs-search-tag .forum-name-main')?.textContent.trim();
-      if (name) forumUrl = `${location.origin}/f?kw=${encodeURIComponent(name)}`;
-    }
+    const forumUrl = getPostForumUrl(frame);
     if (!nav) {
       nav = document.createElement('nav');
       nav.id = 'tn-post-nav';
@@ -1349,21 +1304,47 @@ html.tn-light-bg body {
   window.addEventListener('resize', () => { clearTimeout(timer); timer = 0; flush(); });
   document.addEventListener('click', (e) => {
     const btn = e.target.closest('.back-btn');
-    if (!btn || btn.closest('#tn-root') || btn.closest('#tn-post-nav')) {
+    if (!btn || btn.closest('#tn-root')) {
       // The nav collapse toggle only flips classes on its own subtree; re-check layout after the
       // site's handler runs so the centred/offset state keeps up with it.
       if (e.target.closest('.collapse-btn')) schedule();
       return;
     }
+    // The custom post nav is a real anchor: refresh its target from the current frame right now, so
+    // a cross-forum SPA switch cannot send the click to the previous forum while the href observer
+    // is still waiting for its 150 ms pass. Then let the browser do a normal navigation or
+    // ctrl/middle-click, instead of forcing a location change that would break new-tab semantics.
+    if (btn.closest('#tn-post-nav')) {
+      const frame = btn.closest('.pb-page-wrapper');
+      const url = frame ? getPostForumUrl(frame) : '';
+      if (url) btn.setAttribute('href', url);
+      else {
+        btn.removeAttribute('href');
+        e.preventDefault();
+      }
+      return;
+    }
+    // Only the two native navigation controls are intercepted. Dialogs, post bodies and other
+    // elements that happen to reuse .back-btn keep the site's own behaviour, as does the profile
+    // page's .router-back.
+    const frs = btn.matches('.frs-page-wrap .frs-page-container > .floating-buttons > .back-btn');
+    const pb = btn.matches('.pb-page-wrapper .pc-pb-box > .container > .floating-buttons > .back-btn');
+    if (!frs && !pb) return;
     e.preventDefault();
     e.stopImmediatePropagation();
-    let canBack = false;
-    try {
-      const sameSiteRef = !!document.referrer && new URL(document.referrer).origin === location.origin;
-      canBack = history.length > 1 && (sameSiteRef || navIdx > 0);
-    } catch { /* ignore */ }
-    if (canBack) history.back();
-    else location.href = 'https://tieba.baidu.com/';
+    // The forum list is the destination in both cases; never go back to a previously visited post.
+    // A relative path keeps the navigation on the site.
+    const forumUrl = pb ? getPostForumUrl(btn.closest('.pb-page-wrapper')) : '';
+    let dest = '/';
+    if (forumUrl) {
+      try {
+        const url = new URL(forumUrl);
+        if (url.origin === location.origin && url.pathname === '/f' && url.searchParams.get('kw')) {
+          dest = `/f${url.search}`;
+        }
+      } catch { /* keep the home page */ }
+    }
+    location.assign(dest);
   }, true);
 
   const PANEL_CSS = `
