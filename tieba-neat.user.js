@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贴吧清爽宽屏 Tieba Neat
 // @namespace    tieba-neat
-// @version      0.6.6
+// @version      0.6.9
 // @description  仅适用于新版贴吧桌面布局：宽屏居中、统一背景与文字配色，隐藏广告和推荐栏目，可切换首页关注 / 推荐
 // @author       mykonakona
 // @match        *://tieba.baidu.com/*
@@ -171,6 +171,47 @@
 .top-nav-bar .tb-home { width: 34px !important; }
 .top-nav-bar .search-mid { max-width: min(800px, 55vw) !important; }
 html.tn-top-center .top-nav-bar .search-mid { transform: translateX(var(--tn-search-shift, 0px)); }
+/* Post navigation mirrors the site's floating-buttons: same icons, same transparent circular hover
+   and the same two anchors. The site's own strip is a sticky column: back sits 20px below the
+   scroller top, back-to-top at calc(100vh - 115px) on post pages. This nav is a transparent full-height fixed
+   layer whose children are absolutely positioned at those two anchors, so nothing is re-ordered
+   into one column and only the buttons themselves take pointer events. */
+#tn-post-nav { position: fixed; top: 0; bottom: 0; left: var(--tn-post-nav-left, 4px); z-index: 10; width: 40px; pointer-events: none; }
+#tn-post-nav :is(a, button) { position: absolute; left: 0; pointer-events: auto; box-sizing: border-box; display: flex; align-items: center; justify-content: center; width: 40px; height: 40px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--cos-color-text, #50525c); text-decoration: none; cursor: pointer; transition: background-color .15s ease; }
+#tn-post-nav .tn-post-back { top: var(--tn-post-top, 80px); }
+#tn-post-nav .back-top { top: var(--tn-post-lower, calc(100vh - 55px)); }
+#tn-post-nav svg { display: block; }
+#tn-post-nav .back-icon { width: 19px; height: 19px; }
+#tn-post-nav .back-top-icon { width: 23px; height: 23px; }
+#tn-post-nav [hidden] { display: none !important; }
+#tn-post-nav :is(a, button):hover { background: rgba(0, 0, 0, .07); }
+html.tn-dark-bg #tn-post-nav :is(a, button):hover { background: rgba(255, 255, 255, .16); }
+#tn-post-nav :is(a, button):focus-visible { outline: 2px solid #4070ff; }
+/* The site's back icon is a fixed white stroke (#back_arrow_dark); it stays readable on a dark
+   background but vanishes on our light one. Tint the same symbol for both the native module buttons
+   and the post nav, so the two never diverge. Dark backgrounds keep the original white. */
+html.tn-light-bg :is(.frs-page-wrap, .home-page-wrapper, .pc-pb-box > .container) .floating-buttons .back-icon,
+html.tn-light-bg #tn-post-nav .back-icon { filter: brightness(0) opacity(.8); }
+/* The independent follow toggle copies the native button classes so it matches .follow-sign in
+   every theme; only the native sign button is hidden while unfollowed, to avoid a second follow.
+   The site spaces 签到 from 发布 with the publish button's own 20px margin-left; the new toggle sits
+   where a second button does, so it carries the same gap on its right. */
+.tn-forum-follow { cursor: pointer; margin-right: 20px; }
+.forum-operate:has(.tn-hide-native-sign) > .tn-forum-follow { margin-right: 0; }
+.tn-hide-native-sign { display: none !important; }
+/* Three native-sized actions need a little more room on narrow headers. Keep the forum name
+   inside its flex slot instead of letting its intrinsic statistics width overlap the actions. */
+@media (max-width: 900px) {
+  .frs-page-wrap .head-pic-area .forum-info-wrapper:not(.single-forum-info-wrapper):has(.tn-forum-follow) { padding-inline: 12px !important; }
+  .frs-page-wrap .head-pic-area .forum-info-wrapper:not(.single-forum-info-wrapper):has(.tn-forum-follow) > .forum-info { width: auto !important; min-width: 0; flex: 1 1 0%; }
+  .frs-page-wrap .head-pic-area .forum-info-wrapper:has(.tn-forum-follow) .forum-desc { width: auto !important; min-width: 0; flex: 1 1 0%; }
+  .frs-page-wrap .head-pic-area .forum-info-wrapper:has(.tn-forum-follow) :is(.forum-name, .forum-data) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+  .frs-page-wrap .head-pic-area .forum-info-wrapper:not(.single-forum-info-wrapper):has(.tn-forum-follow) > .forum-operate { flex: 0 0 auto; margin-left: 8px; }
+  .frs-page-wrap .head-pic-area .tn-forum-follow { margin-right: 8px; }
+  .frs-page-wrap .head-pic-area .forum-operate:has(.tn-hide-native-sign) > .tn-forum-follow { margin-right: 0; }
+  .frs-page-wrap .head-pic-area .forum-operate:has(.tn-forum-follow) > .publish { margin-left: 8px; }
+}
+.pb-page-wrapper:has(#tn-post-nav) .pc-pb-box > .container > .floating-buttons { display: none !important; }
 #tn-feed-empty { padding: 48px 0; text-align: center; font-size: 14px; color: var(--cos-color-text-minor, #848691); }
 `;
 
@@ -181,6 +222,9 @@ html.tn-top-center .top-nav-bar .search-mid { transform: translateX(var(--tn-sea
     for (const s of hideSels) {
       out.push(`:is(${s}) { display: none !important; }`);
     }
+
+    // The sidebar block never restores the forum card/banner: hiding the sidebar keeps the
+    // post column as the only in-flow content.
 
     if (b.leftNav) {
       out.push(`.pc-main-page-layout .content-container .main-content { width: 100% !important; margin-left: 0 !important; }`);
@@ -391,6 +435,9 @@ html.tn-screen-center :is(.home-page-wrapper > .container, .frs-page-wrap, .user
   width: 70% !important;
   height: 70% !important;
 }
+#tn-post-nav { width: var(--tn-fab); }
+#tn-post-nav :is(a, button) { width: var(--tn-fab); height: var(--tn-fab); }
+#tn-post-nav :is(.back-icon, .back-top-icon) { width: 70%; height: 70%; }
 .usercenter-page-wrapper .router-back-wrapper { width: var(--tn-fab) !important; }
 .usercenter-page-wrapper .router-back-wrapper :is(.router-back, .back-top) {
   width: var(--tn-fab) !important;
@@ -976,6 +1023,240 @@ html.tn-light-bg body {
     if (root.style.getPropertyValue('--tn-home-back-left') !== target) root.style.setProperty('--tn-home-back-left', target);
     if (!root.classList.contains('tn-home-back')) root.classList.add('tn-home-back');
   }
+  let postNavResize;
+  let postNavBox;
+  function syncPostNav() {
+    const frame = document.querySelector('.pb-page-wrapper');
+    const box = frame?.querySelector('.pc-pb-box');
+    const content = box?.querySelector('.container > .center-content');
+    let nav = document.getElementById('tn-post-nav');
+    if (!frame || !box || !content) {
+      nav?.remove();
+      postNavResize?.disconnect();
+      postNavBox = null;
+      postScrollAbort?.abort();
+      postScrollAbort = null;
+      postScrollBox = null;
+      return;
+    }
+    if (postNavBox !== box && typeof ResizeObserver !== 'undefined') {
+      postNavResize ||= new ResizeObserver(schedule);
+      postNavResize.disconnect();
+      postNavResize.observe(box);
+      postNavResize.observe(content);
+      postNavBox = box;
+    }
+    // Use the site's explicit current-forum link, not referrer/history (which may be another
+    // post, search, or an external page). Validate it before exposing a navigation target.
+    const link = frame.querySelector('.enter-forum-wrapper a.forum-info-left');
+    let forumUrl = '';
+    try {
+      const url = new URL(link?.getAttribute('href') || '', location.href);
+      if (link && url.origin === location.origin && url.pathname === '/f' && url.searchParams.get('kw')) forumUrl = url.href;
+    } catch { /* wait for the site's forum data */ }
+    // Below the site's sidebar breakpoint the entire native forum card is unmounted. The
+    // search bar still shows the current forum; its dedicated name node excludes the 吧 suffix.
+    if (!link) {
+      const name = document.querySelector('.top-nav-bar .frs-search-tag .forum-name-main')?.textContent.trim();
+      if (name) forumUrl = `${location.origin}/f?kw=${encodeURIComponent(name)}`;
+    }
+    if (!nav) {
+      nav = document.createElement('nav');
+      nav.id = 'tn-post-nav';
+      nav.setAttribute('aria-label', '帖子导航');
+      // Same markup as the site's own floating-buttons: .back-icon/#back_arrow_dark and
+      // .back-top-icon/#back_top, so sizing and theming come from the existing rules.
+      nav.innerHTML = `<a class="back-btn tn-post-back" aria-label="返回本吧帖子列表" title="返回本吧帖子列表"><svg class="back-icon" aria-hidden="true"><use xlink:href="#back_arrow_dark"></use></svg></a><button type="button" class="tn-post-top back-top" aria-label="回到顶部" title="回到顶部"><svg class="back-top-icon" aria-hidden="true"><use xlink:href="#back_top"></use></svg></button>`;
+      nav.querySelector('button').addEventListener('click', () => {
+        const target = document.querySelector('.pb-page-wrapper .pc-pb-box');
+        const btn = nav.querySelector('button');
+        btn.hidden = true;
+        target?.scrollTo({ top: 0, behavior: 'instant' });
+        window.scrollTo({ top: 0, behavior: 'instant' });
+      });
+      frame.appendChild(nav);
+    }
+    const back = nav.querySelector('a');
+    if (forumUrl) {
+      if (back.getAttribute('href') !== forumUrl) back.setAttribute('href', forumUrl);
+      back.hidden = false;
+    } else {
+      back.removeAttribute('href');
+      back.hidden = true;
+    }
+    syncPostScroll();
+    const fab = nav.querySelector('a').getBoundingClientRect().width || 40;
+    const left = Math.max(2, Math.round(content.getBoundingClientRect().left - fab - 2));
+    const value = `${left}px`;
+    if (nav.style.getPropertyValue('--tn-post-nav-left') !== value) nav.style.setProperty('--tn-post-nav-left', value);
+    // Anchor both buttons to the live scrollport: 20px below its top, and calc(100vh - 115px)
+    // inside it for back-to-top, matching the site's sticky offsets instead of stacking them.
+    const boxTop = box.getBoundingClientRect().top;
+    const top = `${Math.round(boxTop + 20)}px`;
+    if (nav.style.getPropertyValue('--tn-post-top') !== top) nav.style.setProperty('--tn-post-top', top);
+    // The post page's own CSS anchors .back-top at calc(100vh - 115px) inside its scrollport
+    // (the forum page uses 114px), so this nav follows the post page's offset.
+    const lower = `${Math.round(boxTop + window.innerHeight - 115)}px`;
+    if (nav.style.getPropertyValue('--tn-post-lower') !== lower) nav.style.setProperty('--tn-post-lower', lower);
+  }
+  // The post body scrolls inside .pc-pb-box, not the window, so the site's own back-to-top never
+  // appears. Watch both scrollers and hide the button again the instant the top is reached.
+  let postScrollAbort;
+  let postScrollBox;
+  // Scroll feedback must be immediate and cheap: toggling one attribute here beats scheduling a
+  // whole layout pass, which would also re-enter the MutationObserver on every scroll tick.
+  function updatePostTopVisibility() {
+    const box = postScrollBox;
+    const btn = document.querySelector('#tn-post-nav .back-top');
+    if (!box || !btn) return;
+    const show = box.scrollTop > 0 || window.scrollY > 0;
+    if (btn.hidden === show) btn.hidden = !show;
+  }
+  function syncPostScroll() {
+    const box = document.querySelector('.pb-page-wrapper .pc-pb-box');
+    const btn = document.querySelector('#tn-post-nav .back-top');
+    if (!box || !btn) {
+      postScrollAbort?.abort();
+      postScrollAbort = null;
+      postScrollBox = null;
+      return;
+    }
+    if (postScrollBox !== box) {
+      postScrollAbort?.abort();
+      postScrollAbort = typeof AbortController === 'function' ? new AbortController() : null;
+      const opts = postScrollAbort ? { signal: postScrollAbort.signal, passive: true } : { passive: true };
+      box.addEventListener('scroll', updatePostTopVisibility, opts);
+      window.addEventListener('scroll', updatePostTopVisibility, opts);
+      postScrollBox = box;
+    }
+    updatePostTopVisibility();
+  }
+  // Forum-page follow toggle: an independent button placed directly in .forum-operate, before the
+  // native follow/sign control. It reuses the native button classes and scoped data-v-* attributes
+  // by copying only static attributes, so the site's own TButton styling applies without cloning
+  // Vue handlers. Unfollowed: the native follow button is hidden and click is forwarded to it;
+  // followed: the native cancel-confirm dialog is opened through the BarIntro VM.
+  function isFollowVM(vm) {
+    return !!vm && typeof vm === 'object' && typeof vm.isFollowedFrs === 'boolean'
+      && typeof vm.handleOpenCancelDialog === 'function' && typeof vm.handleFollowAndSign === 'function';
+  }
+  function findFollowVM(start) {
+    if (!start) return null;
+    const queue = [[start, 0]];
+    const seen = new Set();
+    let budget = 80;
+    while (queue.length && budget > 0) {
+      budget--;
+      const [el, depth] = queue.shift();
+      if (!el || seen.has(el)) continue;
+      seen.add(el);
+      const own = el.__vue__;
+      if (isFollowVM(own)) return own;
+      for (const child of (own && Array.isArray(own.$children) ? own.$children : [])) {
+        if (isFollowVM(child)) return child;
+      }
+      if (depth < 5) for (const node of el.children) queue.push([node, depth + 1]);
+    }
+    return null;
+  }
+  const followButtons = [];
+  // Identity classes must not survive on the copy: the next pass looks up the native control by
+  // `.follow-sign`, and a clone carrying it would be selected instead, so a proxy click could
+  // recurse into itself and the native button could be hidden by mistake.
+  const FOLLOW_DROP = /^(id|href|aria-.*|ref|ref_.*|track|track-.*|data-track.*|data-v-.*-ref)$/;
+  const FOLLOW_KEYS = ['follow-sign', 'follow-sign-bottom-mode', 'popover__reference'];
+  function makeFollowButton(native) {
+    const btn = native.cloneNode(false);
+    for (const attr of [...btn.attributes]) {
+      if (FOLLOW_DROP.test(attr.name)) btn.removeAttribute(attr.name);
+    }
+    btn.classList.remove(...FOLLOW_KEYS);
+    btn.replaceChildren();
+    const src = native.querySelector('.center');
+    const center = document.createElement(src?.tagName?.toLowerCase() === 'span' ? 'span' : 'div');
+    center.className = src?.className || 'center';
+    if (src) for (const a of src.attributes) if (a.name.startsWith('data-v-')) center.setAttribute(a.name, a.value);
+    btn.appendChild(center);
+    btn.classList.add('tn-forum-follow');
+    btn.setAttribute('role', 'button');
+    if (!btn.hasAttribute('tabindex')) btn.setAttribute('tabindex', '0');
+    const press = () => {
+      const state = btn._tnFollow;
+      if (!state || !state.vm) return;
+      if (state.vm.isLoading) return;
+      if (state.vm.isFollowedFrs) state.vm.handleOpenCancelDialog();
+      else state.native.click();
+    };
+    btn.addEventListener('click', press);
+    btn.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        press();
+      }
+    });
+    return btn;
+  }
+  // The identity classes also carry the site's own sizing rules, which cannot be copied with the
+  // class. Mirror its computed rules even while the sticky header is hidden: getClientRects() is
+  // empty there, but the site's min-width/height/padding still resolve. Both native modes use
+  // max-content width, allowing the longer cancel label to fit without stretching to 100%.
+  const FOLLOW_SIZE = ['min-width', 'height', 'box-sizing', 'padding-top', 'padding-bottom', 'padding-left', 'padding-right'];
+  function syncFollowSize(btn, native, followed) {
+    const cs = getComputedStyle(native);
+    if (btn.style.width !== 'max-content') btn.style.width = 'max-content';
+    for (const prop of FOLLOW_SIZE) {
+      const value = followed && (prop === 'padding-left' || prop === 'padding-right') ? '16px' : cs.getPropertyValue(prop);
+      const emptySize = value === '0px' && (prop === 'min-width' || prop === 'height');
+      if (value && value !== 'auto' && !emptySize && btn.style.getPropertyValue(prop) !== value) btn.style.setProperty(prop, value);
+    }
+  }
+  function syncFrsFollow() {
+    const live = new Set();
+    const ops = document.querySelectorAll('.frs-page-wrap .head-pic-area .forum-operate');
+    for (const op of ops) {
+      const native = op.querySelector('.follow-sign');
+      if (!native || native.closest('.tn-forum-follow')) continue;
+      // The native control usually sits inside a popover reference wrapper, not directly in
+      // .forum-operate, so walk up to the direct child and insert the toggle before that wrapper.
+      let holder = native;
+      while (holder.parentElement && holder.parentElement !== op) holder = holder.parentElement;
+      if (holder.parentElement !== op) continue;
+      const vm = findFollowVM(op.closest('.frs-page-wrap')?.querySelector('.frs-right-sidebar .bar-wrap'))
+        || findFollowVM(op);
+      let btn = op.querySelector(':scope > .tn-forum-follow');
+      if (!btn) {
+        btn = makeFollowButton(native);
+        followButtons.push(btn);
+      }
+      // Only move the button when it is not already immediately before the native control; a
+      // repeated insertBefore would be a real childList mutation and restart the whole pass.
+      if (btn.parentNode !== op || btn.nextSibling !== holder) op.insertBefore(btn, holder);
+      live.add(btn);
+      const followed = vm ? vm.isFollowedFrs : false;
+      const label = vm ? (followed ? '取消关注' : '关注') : '关注';
+      const center = btn.querySelector('.center');
+      if (center && center.textContent !== label) center.textContent = label;
+      const disabled = !vm;
+      if (btn.disabled !== disabled) btn.disabled = disabled;
+      btn.classList.toggle('is-disabled', disabled);
+      const aria = String(disabled);
+      if (btn.getAttribute('aria-disabled') !== aria) btn.setAttribute('aria-disabled', aria);
+      const title = vm ? (followed ? '取消关注本吧' : '关注本吧') : '未识别到原生关注接口，暂不可用';
+      if (btn.getAttribute('title') !== title) btn.setAttribute('title', title);
+      btn._tnFollow = { vm, native };
+      syncFollowSize(btn, native, followed);
+      native.classList.toggle('tn-hide-native-sign', !!vm && !followed);
+      // A VM-less button stays inert and is reported through disabled + title above.
+      if (btn.hidden !== disabled) btn.hidden = disabled;
+    }
+    for (let i = followButtons.length - 1; i >= 0; i--) {
+      const btn = followButtons[i];
+      if (live.has(btn)) continue;
+      btn._tnFollow?.native?.classList.remove('tn-hide-native-sign');
+      btn.remove();
+      followButtons.splice(i, 1);
+    }
+  }
   function syncReplyBar() {
     const root = document.documentElement;
     const bar = document.querySelector('.pb-page-wrapper .fixed-bottom');
@@ -1002,6 +1283,8 @@ html.tn-light-bg body {
     syncCenteredHeaders();
     syncUserBack();
     syncHomeBack();
+    syncPostNav();
+    syncFrsFollow();
     syncReplyBar();
     if (scanKeywords()) scheduleSettle();
   }
@@ -1038,6 +1321,10 @@ html.tn-light-bg body {
       }
     });
     titleWatch.observe(root, { attributes: true, attributeFilter: ['alt', 'title'], subtree: true });
+    const forumLinkWatch = new MutationObserver((records) => {
+      if (records.some((rec) => rec.target.matches('.enter-forum-wrapper a.forum-info-left'))) schedule();
+    });
+    forumLinkWatch.observe(root, { attributes: true, attributeFilter: ['href'], subtree: true });
   }
 
   if (document.documentElement) {
@@ -1062,7 +1349,7 @@ html.tn-light-bg body {
   window.addEventListener('resize', () => { clearTimeout(timer); timer = 0; flush(); });
   document.addEventListener('click', (e) => {
     const btn = e.target.closest('.back-btn');
-    if (!btn || btn.closest('#tn-root')) {
+    if (!btn || btn.closest('#tn-root') || btn.closest('#tn-post-nav')) {
       // The nav collapse toggle only flips classes on its own subtree; re-check layout after the
       // site's handler runs so the centred/offset state keeps up with it.
       if (e.target.closest('.collapse-btn')) schedule();
@@ -1181,6 +1468,9 @@ html.tn-light-bg body {
     closePanel();
     resetKeywords();
     flush();
+    // Stylesheet replacement can settle after the synchronous pass, even when the native post
+    // column keeps its width. Reuse the bounded final layout pass for navigation positioning.
+    scheduleSettle();
   }
 
   GM_registerMenuCommand('⚙️ 设置', openPanel);
